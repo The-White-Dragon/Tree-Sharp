@@ -1,245 +1,139 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
-using System.Diagnostics;
-using System.Runtime.Serialization;
-using System.Text;
+using System.Linq;
+using System.Runtime.CompilerServices;
 
-namespace SharpTree
+namespace SharpTree;
+
+public sealed class Tree : IReadOnlyCollection<Tree>
 {
-	[Serializable]
-	public class Tree : iTree
-	{
-		public string Name { get; private set; }
+    private static readonly char[] Separators = new[] { Space, Indent, NewLine };
 
-		public string Value { get; private set; }
+    private const char Indent = '\t';
+    private const char NewLine = '\n';
+    private const char Space = ' ';
 
-		public string BaseUri { get; private set; }
+    private const int FrameInitialSize = 2;
 
-		public uint Row { get; private set; }
+    private Tree(in string name, in string? value = null, IReadOnlyList<Tree>? childs = null)
+    {
+        Name = name;
+        Value = value;
+        Childs = childs ?? _emptyTreeArray;
+    }
 
-		public uint Col { get; private set; }
+    private readonly static Tree[] _emptyTreeArray = Array.Empty<Tree>();
 
-		public List<Tree> Childs { get; private set; }
+    public string Name { get; }
 
-		private Tree[] _childs;
+    public string? Value { get; }
 
-		#region Ctors
+    public IReadOnlyList<Tree> Childs { get; private set; }
 
-		[DebuggerStepThrough]
-		protected Tree(string name, string value, List<Tree> childs, string baseUri = "", uint? row = 0, uint? col = 0)
-		{
-			Name = name ?? "";
-			Value = value ?? "";
-			Childs = childs ?? new List<Tree>();
-			BaseUri = baseUri ?? "";
-			Row = row ?? 0;
-			Col = col ?? 0;
-		}
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    public static Tree FromText(in string text, in string rootName = "")
+    {
+        var frames = new Stack<List<Tree>>();
+        frames.Push(new List<Tree>(FrameInitialSize));
 
-		[DebuggerStepThrough]
-		public Tree(string input, string baseUri, uint row = 1, uint col = 1)
-			: this("", null, new List<Tree>(), baseUri, row, col)
-		{
-			var stack = new List<Tree> { this };
-			var parent = this;
-			while (input.Length > 0)
-			{
-				var name = CutUntil(ref input, "\t\n \\");
+        var pos = 0;
 
-				if (name.Length > 0)
-				{
-					var next = new Tree(name, null, new List<Tree>(), baseUri, row, col);
-					parent.Childs.Add(next);
-					parent = next;
-					col += (uint)(name.Length + input.Length - (input = input.TrimStart(' ')).Length);
-					continue;
-				}
+        while (pos < text.Length)
+        {
+            SkipWhile(text, ref pos, NewLine);
+            var lineEnd = text.IndexOf(NewLine, pos);
+            if (lineEnd < 0)
+            {
+                lineEnd = text.Length;
+            }
 
-				if (input.Length == 0)
-					break;
+            var tree = ParseLine(in text, in frames, ref pos, in lineEnd);
 
-				if (input[0] == '\\')
-				{
-					var val = CutUntil(ref input, "\n")[1..^0];
+            frames.Peek().Add(tree);
+        }
 
-					if (string.IsNullOrEmpty(parent.Value))
-						parent.Value = val;
-					else
-						parent.Value += "\n" + val;
-				}
+        return new Tree(in rootName, string.Empty, frames.Pop());
+    }
 
-				if (input.Length == 0)
-					break;
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Tree ParseLine(in string text, in Stack<List<Tree>> frames, ref int pos, in int lineEnd)
+    {
+        var indentStart = pos;
 
-				if (input[0] != '\n')
-					throw new Exception($"Unexpected symbol '{input[0]}'");
+        SkipWhile(in text, ref pos, in lineEnd, Indent);
 
-				input = input[1..^0];
-				row++;
+        var indentSize = pos - indentStart;
 
-				var indent = input.Length - (input = input.TrimStart('\t')).Length;
-				col = (uint)indent;
+        var level = frames.Count - 1;
 
-				if (indent > stack.Count)
-					throw new Exception($"Too many TABs at {row}:{col}");
+        if (indentSize - level is 1)
+        {
+            frames.Push(new List<Tree>(FrameInitialSize));
+        }
+        else if (indentSize < level)
+        {
+            var delta = level - indentSize;
+            for (var j = 0; j < delta; j++)
+            {
+                var endedFrame = frames.Pop();
+                frames.Peek()[^1].Childs = endedFrame;
+            }
+        }
 
-				stack.Add(parent);
-				parent = stack[indent];
-			}
-		}
+        var nameStartPos = pos;
+        pos = text.IndexOfAny(Separators, pos);
+        var name = text[nameStartPos..pos];
 
-		#endregion
+        SkipWhile(in text, ref pos, in lineEnd, Space);
 
-		#region Convert
+        var value = text[pos..lineEnd];
+        pos = lineEnd + 1;
 
-		public override string ToString()
-			=> pipe(new StringBuilder(), "").ToString();
+        return new Tree(name, value);
+    }
 
-		private StringBuilder pipe(StringBuilder output, string prefix = "")
-		{
-			if (!string.IsNullOrEmpty(Name))
-				output.Append($"{Name} ");
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void SkipWhile(in string text, ref int pos, in int end, in char item)
+    {
+        while (pos < end && text[pos] == item)
+        {
+            pos++;
+        }
+    }
 
-			var chunks = Value.Length > 0 ? Value.Split('\n') : Array.Empty<string>();
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void SkipWhile(in string text, ref int pos, in char item)
+    {
+        while (pos < text.Length && text[pos] == item)
+        {
+            pos++;
+        }
+    }
 
-			if (chunks.Length + Childs.Count == 1)
-			{
-				if (chunks.Length > 0)
-					output.Append($"\\{chunks[0]}\n");
-				else
-					Childs[0].pipe(output, prefix);
-			}
-			else
-			{
-				output.Append('\n');
-				if (Name.Length > 0)
-					prefix += '\t';
+    public override string ToString()
+    {
+        return ToString(0);
+    }
 
-				foreach (var chunk in chunks)
-					output.Append($"{prefix}\\{chunk}\n");
+    private string ToString(int level)
+    {
+        return $"{new string(Indent, level)}{Name}{Space}{Value}{Childs?.Aggregate("", (str, item) => $"{str}\n{item.ToString(level + 1)}") ?? ""}";
+    }
 
-				foreach (var child in Childs)
-				{
-					output.Append(prefix);
-					child.pipe(output, prefix);
-				}
-			}
+    public Tree this[string path] => this[path.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
 
-			return output;
-		}
+    public Tree this[string[] path] => path.Length is 1 ? Childs.First(x => x.Name == path[0]) : Childs.First(x => x.Name == path[0])[path[1..]];
 
-		#endregion
+    public int Count => Childs.Count;
 
-		#region Useful
+    public IEnumerator<Tree> GetEnumerator()
+    {
+        return Childs.GetEnumerator();
+    }
 
-		[OnDeserialized]
-		private void OnDeserialized(StreamingContext context)
-		{
-			Childs = new List<Tree>(_childs ?? Array.Empty<Tree>());
-			_childs = null;
-		}
-
-		private Tree Make(string name = null, string value = null, List<Tree> childs = null, string baseUri = null, uint? row = 0, uint? col = 0)
-			=> new Tree(name ?? Name, value ?? Value, childs ?? Childs, baseUri ?? BaseUri, row ?? Row, col ?? Col);
-
-		public Tree Expand() => Make(childs: new List<Tree> { new Tree("@", Uri, _expand()) });
-
-		public string Uri => $"{BaseUri}#{Row}:{Col}";
-
-		#endregion
-
-		#region Interact
-
-		public Tree this[string path] => this[path.Split(' ')];
-
-		public Tree this[string[] path]
-		{
-			get
-			{
-				var next = new List<Tree> { this };
-				foreach (var name in path)
-				{
-					if (next.Count == 0)
-						break;
-
-					var prev = next;
-					next = new List<Tree>();
-					foreach (var item in prev)
-					{
-						foreach (var child in item.Childs)
-						{
-							if (child.Name != name)
-								continue;
-							next.Add(child);
-						}
-					}
-				}
-				return new Tree("", "", next);
-			}
-		}
-
-		public List<Tree> this[Range range] => Expand().Childs[0].Childs.GetRange(range.Start.Value, range.End.Value - range.Start.Value);
-
-		public Tree this[int index] => Expand().Childs[0].Childs[index];
-
-		public int Count => count();
-
-		[DebuggerStepThrough]
-		private int count()
-		{
-			var c = 1;
-			Childs.ForEach((x) => c += x.count());
-			return c;
-		}
-
-		private List<Tree> _expand()
-		{
-			var l = new List<Tree> { this };
-			foreach (var c in Childs)
-			{
-				if (c.Count > 0)
-					l.AddRange(c._expand());
-			}
-			return l;
-		}
-
-		#endregion
-
-		#region Helper
-
-		[DebuggerStepThrough]
-		private string CutUntil(ref string str, string until)
-		{
-			var output = str[0..str.IndexOfAny(until.ToCharArray())];
-			str = str[output.Length..^0];
-			return output;
-		}
-
-		#endregion
-
-		#region Serialization
-
-		public void GetObjectData(SerializationInfo info, StreamingContext context)
-		{
-			info.AddValue("Name", Name);
-			info.AddValue("Value", Value);
-			info.AddValue("BaseUri", BaseUri);
-			info.AddValue("Row", Row);
-			info.AddValue("Col", Col);
-			info.AddValue("Childs", Childs.ToArray());
-		}
-
-		protected Tree(SerializationInfo info, StreamingContext streamingContext) : this("", "")
-		{
-			Name = (string)info.GetValue("Name", typeof(string));
-			Value = (string)info.GetValue("Value", typeof(string));
-			BaseUri = (string)info.GetValue("BaseUri", typeof(string));
-
-			Row = (uint)info.GetValue("Row", typeof(uint));
-			Col = (uint)info.GetValue("Col", typeof(uint));
-			_childs = (Tree[])info.GetValue("Childs", typeof(Tree[]));
-		}
-
-		#endregion
-	}
+    IEnumerator IEnumerable.GetEnumerator()
+    {
+        return Childs.GetEnumerator();
+    }
 }
