@@ -1,22 +1,29 @@
-﻿using BenchmarkDotNet.Running;
+﻿using System.Diagnostics;
 
-BenchmarkRunner.Run<Performance>();
+using Benchmarks;
+
+using static Benchmarks.Utils;
+
+try
+{
+    var parsing = RunBenchmark<Parsing>();
+    var deserialization = RunBenchmark<Deserialization>();
+
+    WriteResults();
+}
+catch { }
+
+Console.WriteLine("All is done. Press any key to close this window");
+
+//var p = new Parsing();
+//p.SetupData();
+
+//GC.Collect();
+
+//Console.WriteLine("Waiting for start");
+
+//Thread.Sleep(1000);
+
+//var tree = p.TreeSharp();
 
 Console.ReadKey();
-
-//public class Program
-//{
-//    public static void Main()
-//    {
-
-//        var p = new Performance();
-//        p.SetupTreeText();
-//        Console.WriteLine("Ready for profiling");
-
-//        Console.ReadKey();
-//        Console.WriteLine(Tree.FromText(p.TreeText));
-
-//        Console.WriteLine("Profiling done");
-//        Console.ReadKey();
-//    }
-//}

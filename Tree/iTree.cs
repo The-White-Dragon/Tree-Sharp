@@ -1,13 +1,12 @@
 ﻿using System.Collections.Generic;
 
-namespace SharpTree
+namespace SharpTree;
+
+internal interface ITree : IReadOnlyCollection<Tree>
 {
-    internal interface ITree : IReadOnlyCollection<Tree>
-    {
-        string Name { get; }
+    string Name { get; }
 
-        string Value { get; }
+    string Value { get; }
 
-        IReadOnlyCollection<Tree> Childs { get; }
-    }
+    IReadOnlyCollection<Tree> Childs { get; }
 }

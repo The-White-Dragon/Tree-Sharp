@@ -2,138 +2,223 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
+using System.Text;
 
 namespace SharpTree;
 
-public sealed class Tree : IReadOnlyCollection<Tree>
+internal static class Utils
 {
-    private static readonly char[] Separators = new[] { Space, Indent, NewLine };
+    internal const int FrameInitialSize = 2;
 
-    private const char Indent = '\t';
-    private const char NewLine = '\n';
-    private const char Space = ' ';
+    internal static readonly char[] Separators = new[] { Space, Indent, NewLine };
 
-    private const int FrameInitialSize = 2;
+    internal const char Indent = '\t';
+    internal const char NewLine = '\n';
+    internal const char Space = ' ';
+}
 
-    private Tree(in string name, in string? value = null, IReadOnlyList<Tree>? childs = null)
+internal sealed class TreeParser
+{
+    public TreeParser(string text!!)
     {
-        Name = name;
-        Value = value;
-        Childs = childs ?? _emptyTreeArray;
+        _memory = text.AsMemory();
     }
 
-    private readonly static Tree[] _emptyTreeArray = Array.Empty<Tree>();
+    private readonly ReadOnlyMemory<char> _memory;
 
-    public string Name { get; }
-
-    public string? Value { get; }
-
-    public IReadOnlyList<Tree> Childs { get; private set; }
+    private readonly List<List<Tree>> frames = new(Utils.FrameInitialSize);
 
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-    public static Tree FromText(in string text, in string rootName = "")
+    internal Tree Parse(string rootName)
     {
-        var frames = new Stack<List<Tree>>();
-        frames.Push(new List<Tree>(FrameInitialSize));
-
+        var text = _memory.Span;
         var pos = 0;
+
+        AddFrame();
 
         while (pos < text.Length)
         {
-            SkipWhile(text, ref pos, NewLine);
-            var lineEnd = text.IndexOf(NewLine, pos);
-            if (lineEnd < 0)
+            var frame = text[pos..];
+            var length = frame.IndexOf(Utils.NewLine);
+
+            length = length < 0 ? frame.Length : length;
+
+            var line = text.Slice(pos, length);
+            var lineStart = pos;
+            pos += length + 1;
+
+            if (line.IsWhiteSpace() || line[0] is Utils.Space)
             {
-                lineEnd = text.Length;
+                continue;
             }
 
-            var tree = ParseLine(in text, in frames, ref pos, in lineEnd);
+            var content = line.TrimStart();
 
-            frames.Peek().Add(tree);
-        }
+            var indent = line.Length - content.Length;
+            var level = frames.Count - 1;
 
-        return new Tree(in rootName, string.Empty, frames.Pop());
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static Tree ParseLine(in string text, in Stack<List<Tree>> frames, ref int pos, in int lineEnd)
-    {
-        var indentStart = pos;
-
-        SkipWhile(in text, ref pos, in lineEnd, Indent);
-
-        var indentSize = pos - indentStart;
-
-        var level = frames.Count - 1;
-
-        if (indentSize - level is 1)
-        {
-            frames.Push(new List<Tree>(FrameInitialSize));
-        }
-        else if (indentSize < level)
-        {
-            var delta = level - indentSize;
-            for (var j = 0; j < delta; j++)
+            if (indent - level is 1)
             {
-                var endedFrame = frames.Pop();
-                frames.Peek()[^1].Childs = endedFrame;
+                AddFrame();
             }
+            else if (indent < level)
+            {
+                CollapseBy(level - indent);
+            }
+
+            var separator = content.IndexOf(Utils.Space);
+
+            if (separator < 0)
+            {
+                separator = content.Length;
+            }
+
+            var name = _memory.Slice(lineStart + indent, separator);
+
+            var value = _memory.Slice(lineStart + indent + separator, content.Length - name.Length).TrimStart();
+
+            Push(new Tree(name, value));
         }
 
-        var nameStartPos = pos;
-        pos = text.IndexOfAny(Separators, pos);
-        var name = text[nameStartPos..pos];
+        CollapseToLevel(1);
 
-        SkipWhile(in text, ref pos, in lineEnd, Space);
-
-        var value = text[pos..lineEnd];
-        pos = lineEnd + 1;
-
-        return new Tree(name, value);
+        return new Tree(rootName.AsMemory(), ReadOnlyMemory<char>.Empty, frames[0]);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void SkipWhile(in string text, ref int pos, in int end, in char item)
+    private void CollapseBy(int delta)
     {
-        while (pos < end && text[pos] == item)
+        for (var j = 0; j < delta; j++)
         {
-            pos++;
+            var endedFrame = frames[^1];
+            frames.RemoveAt(frames.Count - 1);
+
+            var item = frames[^1][^1];
+            item.SetChilds(endedFrame);
+
+            frames[^1][^1] = item;
         }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void SkipWhile(in string text, ref int pos, in char item)
+    private void CollapseToLevel(int level)
     {
-        while (pos < text.Length && text[pos] == item)
-        {
-            pos++;
-        }
+        CollapseBy(frames.Count - level);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void AddFrame()
+    {
+        frames.Add(new(Utils.FrameInitialSize));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void Push(Tree item)
+    {
+        frames[^1].Add(item);
+    }
+}
+
+public struct Tree
+{
+    internal Tree(in ReadOnlyMemory<char> name, in ReadOnlyMemory<char> value, IReadOnlyList<Tree>? childs = null)
+    {
+        _name = name;
+        _value = value;
+        Childs = childs ?? Array.Empty<Tree>();
+    }
+
+    private readonly ReadOnlyMemory<char> _name;
+
+    private readonly ReadOnlyMemory<char> _value;
+
+    public string Value => _value.ToString();
+
+    public string Name => _name.ToString();
+
+    public IReadOnlyList<Tree> Childs { get; private set; }
+
+    public static Tree Parse(string text!!)
+    {
+        return new TreeParser(text).Parse(string.Empty);
+    }
+
+    public static Tree Parse(string text!!, string rootName)
+    {
+        return new TreeParser(text).Parse(rootName);
     }
 
     public override string ToString()
     {
-        return ToString(0);
+        if (_name.Span.IsWhiteSpace())
+        {
+            var sb = new StringBuilder();
+            foreach (var child in Childs)
+            {
+                sb.Append(child.ToString(0));
+            }
+
+            return sb.ToString().TrimEnd();
+        }
+
+        return ToString(0).TrimEnd();
     }
 
     private string ToString(int level)
     {
-        return $"{new string(Indent, level)}{Name}{Space}{Value}{Childs?.Aggregate("", (str, item) => $"{str}\n{item.ToString(level + 1)}") ?? ""}";
+        var sb = new StringBuilder(new string(Utils.Indent, level))
+            .Append(_name)
+            .Append(Utils.Space)
+            .Append(_value)
+            .Append(Utils.NewLine);
+
+        foreach (var child in Childs)
+        {
+            sb.Append(child.ToString(level + 1));
+        }
+
+        return sb.ToString();
     }
 
-    public Tree this[string path] => this[path.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
+    internal void SetChilds(List<Tree> endedFrame)
+    {
+        Childs = endedFrame;
+    }
 
-    public Tree this[string[] path] => path.Length is 1 ? Childs.First(x => x.Name == path[0]) : Childs.First(x => x.Name == path[0])[path[1..]];
+    public Tree this[in string path] => this[path.AsSpan()];
+
+    private Tree this[ReadOnlySpan<char> path]
+    {
+        get
+        {
+            var separator = path.IndexOf(Utils.Space);
+            if (separator < 0)
+            {
+                for (var i = 0; i < Childs.Count; i++)
+                {
+                    if (Childs[i]._name.Span.Equals(path, StringComparison.InvariantCulture))
+                    {
+                        return Childs[i];
+                    }
+                }
+                throw new KeyNotFoundException();
+            }
+
+            return this[path[..separator]][path[separator..].Trim()];
+        }
+    }
 
     public int Count => Childs.Count;
 
-    public IEnumerator<Tree> GetEnumerator()
-    {
-        return Childs.GetEnumerator();
-    }
+    //public IEnumerator<Tree> GetEnumerator()
+    //{
+    //    return Childs.GetEnumerator();
+    //}
 
-    IEnumerator IEnumerable.GetEnumerator()
-    {
-        return Childs.GetEnumerator();
-    }
+    //IEnumerator IEnumerable.GetEnumerator()
+    //{
+    //    return Childs.GetEnumerator();
+    //}
 }
